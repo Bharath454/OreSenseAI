@@ -1,0 +1,180 @@
+services:
+  # ── Infrastructure ───────────────────────────────────────────────────────────
+  postgres:
+    image: timescale/timescaledb-ha:pg15-latest
+    container_name: oresense_postgres
+    environment:
+      POSTGRES_DB: oresense
+      POSTGRES_USER: oresense
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oresense_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oresense"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: oresense_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: oresense_mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mqttdata:/mosquitto/data
+      - mqttlog:/mosquitto/log
+
+  # ── Backend ──────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oresense_backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://oresense:${POSTGRES_PASSWORD:-oresense_dev}@postgres:5432/oresense
+      REDIS_URL: redis://redis:6379/0
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: "1883"
+      MODE: ${MODE:-SIMULATED}
+      AOI_MINLAT: ${AOI_MINLAT:-21.60}
+      AOI_MAXLAT: ${AOI_MAXLAT:-21.73}
+      AOI_MINLON: ${AOI_MINLON:-80.58}
+      AOI_MAXLON: ${AOI_MAXLON:-80.71}
+      GRID_ROWS: "20"
+      GRID_COLS: "13"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - modeldata:/app/models/weights
+      - cachedata:/app/cache
+    command: >
+      sh -c "python scripts/seed_db.py &&
+             python scripts/train_models.py &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  # ── IoT Simulator ────────────────────────────────────────────────────────────
+  iot_simulator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oresense_iot
+    env_file: .env
+    environment:
+      MQTT_BROKER: mosquitto
+      MQTT_PORT: "1883"
+      DATABASE_URL: postgresql://oresense:${POSTGRES_PASSWORD:-oresense_dev}@postgres:5432/oresense
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    command: python simulators/iot_simulator.py
+    restart: unless-stopped
+
+  # ── Federated Learning Workers ───────────────────────────────────────────────
+  fl_server:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oresense_fl_server
+    env_file: .env
+    environment:
+      FL_ROUNDS: "5"
+      FL_MIN_CLIENTS: "3"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend
+    command: python federated/fl_server.py
+    restart: unless-stopped
+
+  fl_client_balaghat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oresense_fl_balaghat
+    env_file: .env
+    environment:
+      SITE_NAME: Balaghat
+      FL_SERVER: fl_server:8080
+    depends_on:
+      - fl_server
+    command: python federated/fl_client.py
+    restart: unless-stopped
+
+  fl_client_nagpur:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oresense_fl_nagpur
+    env_file: .env
+    environment:
+      SITE_NAME: Nagpur
+      FL_SERVER: fl_server:8080
+    depends_on:
+      - fl_server
+    command: python federated/fl_client.py
+    restart: unless-stopped
+
+  fl_client_gumgaon:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oresense_fl_gumgaon
+    env_file: .env
+    environment:
+      SITE_NAME: Gumgaon
+      FL_SERVER: fl_server:8080
+    depends_on:
+      - fl_server
+    command: python federated/fl_client.py
+    restart: unless-stopped
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: oresense_frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:
+  mqttdata:
+  mqttlog:
+  modeldata:
+  cachedata:

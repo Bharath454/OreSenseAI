@@ -1,0 +1,1 @@
+"""OreSense AI – Core package"""
