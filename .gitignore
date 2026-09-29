@@ -10,9 +10,10 @@ build/
 venv/
 .env
 
-# Data / models
+# Data / models (generated at runtime)
 backend/models/weights/
 backend/cache/
+backend/data/
 
 # Docker
 .docker/
@@ -26,11 +27,12 @@ frontend/.env
 .vscode/
 .idea/
 *.swp
+.agents/
 
 # Logs
 *.log
 
-# PostgreSQL
+# PostgreSQL volumes
 pgdata/
 redisdata/
 mqttdata/
@@ -38,3 +40,7 @@ mqttdata/
 # OS
 .DS_Store
 Thumbs.db
+
+# Misc
+*.pkl
+*.zip
